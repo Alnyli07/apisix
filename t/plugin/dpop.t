@@ -346,7 +346,9 @@ invalid_dpop_proof.*
 
             -- DER ECDSA sig → raw R||S for JWS
             local function der_to_raw(der, size)
-                local pos = 3
+                -- DER layout: 0x30 <seq_len> 0x02 <r_len> <r...> 0x02 <s_len> <s...>
+                -- pos starts at 4 (skipping 0x30, seq_len, and the 0x02 r INTEGER tag)
+                local pos = 4
                 local r_len = der:byte(pos)
                 pos = pos + 1
                 local r = der:sub(pos, pos + r_len - 1)
@@ -453,7 +455,9 @@ status: 200
             end
 
             local function der_to_raw(der, size)
-                local pos = 3
+                -- DER layout: 0x30 <seq_len> 0x02 <r_len> <r...> 0x02 <s_len> <s...>
+                -- pos starts at 4 (skipping 0x30, seq_len, and the 0x02 r INTEGER tag)
+                local pos = 4
                 local r_len = der:byte(pos)
                 pos = pos + 1
                 local r = der:sub(pos, pos + r_len - 1)
