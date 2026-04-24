@@ -1,3 +1,19 @@
+--
+-- Licensed to the Apache Software Foundation (ASF) under one or more
+-- contributor license agreements.  See the NOTICE file distributed with
+-- this work for additional information regarding copyright ownership.
+-- The ASF licenses this file to You under the Apache License, Version 2.0
+-- (the "License"); you may not use this file except in compliance with
+-- the License.  You may obtain a copy of the License at
+--
+--     http://www.apache.org/licenses/LICENSE-2.0
+--
+-- Unless required by applicable law or agreed to in writing, software
+-- distributed under the License is distributed on an "AS IS" BASIS,
+-- WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+-- See the License for the specific language governing permissions and
+-- limitations under the License.
+--
 local core = require("apisix.core")
 local cjson = require("cjson.safe")
 local resty_sha256 = require("resty.sha256")
@@ -5,6 +21,13 @@ local http = require("resty.http")
 local openssl_pkey = require("resty.openssl.pkey")
 local lrucache = require("resty.lrucache")
 local ngx = ngx
+local pairs = pairs
+local ipairs = ipairs
+local tostring = tostring
+local type = type
+local string = string
+local math = math
+local require = require
 
 local plugin_name = "dpop"
 
@@ -209,6 +232,10 @@ local schema = {
         token_issuer = {
             type = "string",
             default = "",
+        },
+        ssl_verify = {
+            type = "boolean",
+            default = true,
         },
     },
     additionalProperties = false,
@@ -454,7 +481,10 @@ local function resolve_jwks_uri(conf)
 
     local httpc = http.new()
     httpc:set_timeout(5000)
-    local res, err = httpc:request_uri(conf.discovery, { method = "GET", ssl_verify = false })
+    local res, err = httpc:request_uri(conf.discovery, {
+        method = "GET",
+        ssl_verify = conf.ssl_verify,
+    })
     if not res then
         return nil, "discovery fetch failed: " .. (err or "unknown")
     end
@@ -480,10 +510,13 @@ local function resolve_jwks_uri(conf)
 end
 
 
-local function fetch_jwks(uri)
+local function fetch_jwks(uri, ssl_verify)
     local httpc = http.new()
     httpc:set_timeout(5000)
-    local res, err = httpc:request_uri(uri, { method = "GET", ssl_verify = false })
+    local res, err = httpc:request_uri(uri, {
+        method = "GET",
+        ssl_verify = ssl_verify,
+    })
     if not res then
         return nil, "JWKS fetch failed: " .. (err or "unknown")
     end
@@ -535,7 +568,7 @@ local function get_jwk_for_kid(conf, kid)
         return nil, "kid '" .. kid .. "' not found in JWKS (rate limited, retry later)"
     end
 
-    local keys_by_kid, fetch_err = fetch_jwks(jwks_uri)
+    local keys_by_kid, fetch_err = fetch_jwks(jwks_uri, conf.ssl_verify)
     if not keys_by_kid then
         return nil, fetch_err
     end
@@ -609,14 +642,28 @@ local function verify_access_token_signature(access_token, at_jwt, conf)
     return true
 end
 
--- Convert raw ECDSA R||S (64 bytes for ES256) to DER format for OpenSSL
-local function raw_ecdsa_to_der(raw_sig)
-    if #raw_sig ~= 64 then
-        return nil, "invalid ES256 signature length: expected 64, got " .. #raw_sig
+-- EC component sizes per algorithm: ES256=32, ES384=48, ES512=66
+local EC_COMPONENT_SIZE = {
+    ES256 = 32,
+    ES384 = 48,
+    ES512 = 66,
+}
+
+-- Convert raw ECDSA R||S to DER format for OpenSSL
+local function raw_ecdsa_to_der(raw_sig, alg)
+    local comp_size = EC_COMPONENT_SIZE[alg]
+    if not comp_size then
+        return nil, "unsupported EC algorithm: " .. (alg or "nil")
+    end
+    local expected_len = comp_size * 2
+    if #raw_sig ~= expected_len then
+        return nil, "invalid " .. alg .. " signature length: "
+            .. "expected " .. expected_len
+            .. ", got " .. #raw_sig
     end
 
-    local r = raw_sig:sub(1, 32)
-    local s = raw_sig:sub(33, 64)
+    local r = raw_sig:sub(1, comp_size)
+    local s = raw_sig:sub(comp_size + 1, expected_len)
 
     -- Strip leading zeros but keep at least one byte
     while #r > 1 and r:byte(1) == 0 do r = r:sub(2) end
@@ -647,30 +694,43 @@ local function verify_dpop_proof_signature(proof)
     end
 
     local alg = proof.header.alg
-    if alg == "ES256" then
-        local der_sig, der_err = raw_ecdsa_to_der(signature)
+
+    -- EC algorithms: ES256, ES384, ES512
+    local ec_digest = ({ ES256 = "sha256", ES384 = "sha384", ES512 = "sha512" })[alg]
+    if ec_digest then
+        local der_sig, der_err = raw_ecdsa_to_der(signature, alg)
         if not der_sig then
             return false, der_err
         end
-        local ok, err = pkey:verify(der_sig, signing_input, "sha256")
+        local ok, err = pkey:verify(der_sig, signing_input, ec_digest)
         if not ok then
-            return false, "ES256 proof signature verification failed: " .. (err or "invalid")
+            return false, alg .. " proof signature verification failed: "
+                .. (err or "invalid")
         end
-    elseif alg == "RS256" then
-        local ok, err = pkey:verify(signature, signing_input, "sha256")
+
+    -- RSA algorithms: RS256, RS384, RS512
+    elseif alg == "RS256" or alg == "RS384" or alg == "RS512" then
+        local digest = ALG_TO_DIGEST[alg]
+        local ok, err = pkey:verify(signature, signing_input, digest)
         if not ok then
-            return false, "RS256 proof signature verification failed: " .. (err or "invalid")
+            return false, alg .. " proof signature verification failed: "
+                .. (err or "invalid")
         end
-    elseif alg == "RS384" then
-        local ok, err = pkey:verify(signature, signing_input, "sha384")
+
+    -- RSA-PSS algorithms: PS256, PS384, PS512
+    elseif alg == "PS256" or alg == "PS384" or alg == "PS512" then
+        local ps_digest = ({
+            PS256 = "sha256", PS384 = "sha384", PS512 = "sha512",
+        })[alg]
+        local ok, err = pkey:verify(
+            signature, signing_input, ps_digest, nil,
+            {{"rsa_padding_mode", "pss"}}
+        )
         if not ok then
-            return false, "RS384 proof signature verification failed: " .. (err or "invalid")
+            return false, alg .. " proof signature verification failed: "
+                .. (err or "invalid")
         end
-    elseif alg == "RS512" then
-        local ok, err = pkey:verify(signature, signing_input, "sha512")
-        if not ok then
-            return false, "RS512 proof signature verification failed: " .. (err or "invalid")
-        end
+
     else
         return false, "unsupported proof signature algorithm: " .. alg
     end
@@ -857,9 +917,11 @@ local function jti_check(jti, conf)
             )
             if auth_hdr then headers["Authorization"] = auth_hdr end
         end
-        local res, err = httpc:request_uri(url,
-            { method = "POST", body = "1", headers = headers, ssl_verify = false }
-        )
+        local res, err = httpc:request_uri(url, {
+            method = "POST", body = "1",
+            headers = headers,
+            ssl_verify = conf.ssl_verify,
+        })
         -- Digest auth: on 401, parse nonce from WWW-Authenticate and retry
         if res and res.status == 401 and has_creds then
             local www_auth = res.headers
@@ -878,9 +940,11 @@ local function jti_check(jti, conf)
                     headers["Authorization"] = auth_hdr
                     httpc = http.new()
                     httpc:set_timeout(3000)
-                    res, err = httpc:request_uri(url,
-                        { method = "POST", body = "1", headers = headers, ssl_verify = false }
-                    )
+                    res, err = httpc:request_uri(url, {
+                        method = "POST", body = "1",
+                        headers = headers,
+                        ssl_verify = conf.ssl_verify,
+                    })
                 end
             end
         end
@@ -1007,7 +1071,7 @@ local function call_introspection(access_token, conf)
         method = "POST",
         body = body,
         headers = req_headers,
-        ssl_verify = false,
+        ssl_verify = conf.ssl_verify,
     })
     if not res then
         return nil, "introspection request failed: " .. (err or "unknown")
