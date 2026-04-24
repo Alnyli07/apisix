@@ -361,10 +361,18 @@ end
 
 
 local function parse_jwt(token)
+    -- Manual split on '.' that preserves empty trailing segments,
+    -- so a valid JWS Compact Serialization with empty signature
+    -- (e.g. "header.payload." for alg=none) is recognized as 3 parts.
     local parts = {}
-    for part in token:gmatch("[^%.]+") do
-        parts[#parts + 1] = part
+    local start = 1
+    local dot = token:find(".", start, true)
+    while dot do
+        parts[#parts + 1] = token:sub(start, dot - 1)
+        start = dot + 1
+        dot = token:find(".", start, true)
     end
+    parts[#parts + 1] = token:sub(start)
 
     if #parts ~= 3 then
         return nil, "invalid JWT: expected 3 parts, got " .. #parts
