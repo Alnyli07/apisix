@@ -123,7 +123,7 @@ All use the TEST 12 route (`/hello` with DPoP plugin, `verify_access_token=false
 Implementation notes:
 - TEST 26's replay relies on the default in-memory replay cache. No extra config.
 - TEST 28 is expected to be caught by `allowed_algs` filtering before signature verification is attempted. The regex accepts either error wording.
-- TEST 30 is emitted via test-nginx `--- more_headers` writing two `DPoP:` lines.
+- TEST 30 emits two `DPoP` headers via `resty.http` by passing the header value as a table: `headers = { Authorization = "DPoP " .. at, DPoP = { proof_a, proof_b } }`. (`more_headers` would only affect the outer test-nginx request to `/t`, not the inner request to `/hello`.)
 
 ## Commit strategy (on `feat/plugin-dpop-test-infra`)
 
