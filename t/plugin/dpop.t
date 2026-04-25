@@ -622,7 +622,7 @@ error: invalid_dpop_proof
     }
 --- response_body
 status: 401
-error: invalid_dpop_proof
+error: DPOP_BINDING_MISMATCH
 
 
 
