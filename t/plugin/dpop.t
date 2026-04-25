@@ -335,92 +335,16 @@ invalid_dpop_proof.*
 --- config
     location /t {
         content_by_lua_block {
-            local cjson = require("cjson.safe")
-            local openssl_pkey = require("resty.openssl.pkey")
-            local resty_sha256 = require("resty.sha256")
-
-            local function b64url_encode(input)
-                local b64 = ngx.encode_base64(input)
-                return b64:gsub("+", "-"):gsub("/", "_"):gsub("=", "")
-            end
-
-            -- DER ECDSA sig → raw R||S for JWS
-            local function der_to_raw(der, size)
-                -- DER layout: 0x30 <seq_len> 0x02 <r_len> <r...> 0x02 <s_len> <s...>
-                -- pos starts at 4 (skipping 0x30, seq_len, and the 0x02 r INTEGER tag)
-                local pos = 4
-                local r_len = der:byte(pos)
-                pos = pos + 1
-                local r = der:sub(pos, pos + r_len - 1)
-                pos = pos + r_len + 1
-                local s_len = der:byte(pos)
-                pos = pos + 1
-                local s = der:sub(pos, pos + s_len - 1)
-                while #r > size do r = r:sub(2) end
-                while #s > size do s = s:sub(2) end
-                while #r < size do r = "\0" .. r end
-                while #s < size do s = "\0" .. s end
-                return r .. s
-            end
-
-            local pkey = openssl_pkey.new({
-                type = "EC", curve = "prime256v1"
-            })
-            local params = pkey:get_parameters()
-            local jwk = {
-                kty = "EC", crv = "P-256",
-                x = b64url_encode(params.x:to_binary()),
-                y = b64url_encode(params.y:to_binary()),
-            }
-
-            local tp_input = '{"crv":"P-256"'
-                .. ',"kty":"EC"'
-                .. ',"x":"' .. jwk.x .. '"'
-                .. ',"y":"' .. jwk.y .. '"}'
-            local sha = resty_sha256:new()
-            sha:update(tp_input)
-            local thumbprint = b64url_encode(sha:final())
-
-            local at_h = b64url_encode(
-                cjson.encode({alg = "none", typ = "JWT"})
-            )
-            local at_p = b64url_encode(cjson.encode({
-                sub = "testuser",
-                cnf = { jkt = thumbprint },
-                exp = ngx.time() + 3600,
-            }))
-            local access_token = at_h .. "." .. at_p .. "."
-
-            local dpop_h = cjson.encode({
-                typ = "dpop+jwt", alg = "ES256", jwk = jwk,
-            })
-            local dpop_p = cjson.encode({
-                htm = "GET",
-                htu = "http://localhost/hello",
-                iat = ngx.time(),
-                jti = "es256-" .. tostring(ngx.now()),
-                ath = b64url_encode((function()
-                    local s2 = resty_sha256:new()
-                    s2:update(access_token)
-                    return s2:final()
-                end)()),
-            })
-            local si = b64url_encode(dpop_h)
-                .. "." .. b64url_encode(dpop_p)
-            local der_sig = pkey:sign(si, "sha256")
-            local raw_sig = der_to_raw(der_sig, 32)
-            local proof = si .. "." .. b64url_encode(raw_sig)
-
-            local http = require("resty.http")
-            local httpc = http.new()
+            local h = require("lib.dpop")
+            local f = h.valid_flow("ES256")
+            local httpc = require("resty.http").new()
             local res, err = httpc:request_uri(
                 "http://127.0.0.1:1984/hello",
                 {
                     method = "GET",
                     headers = {
-                        ["Authorization"] = "DPoP "
-                            .. access_token,
-                        ["DPoP"] = proof,
+                        ["Authorization"] = "DPoP " .. f.access_token,
+                        ["DPoP"] = f.proof,
                     },
                 }
             )
@@ -445,91 +369,16 @@ status: 200
 --- config
     location /t {
         content_by_lua_block {
-            local cjson = require("cjson.safe")
-            local openssl_pkey = require("resty.openssl.pkey")
-            local resty_sha256 = require("resty.sha256")
-
-            local function b64url_encode(input)
-                local b64 = ngx.encode_base64(input)
-                return b64:gsub("+", "-"):gsub("/", "_"):gsub("=", "")
-            end
-
-            local function der_to_raw(der, size)
-                -- DER layout: 0x30 <seq_len> 0x02 <r_len> <r...> 0x02 <s_len> <s...>
-                -- pos starts at 4 (skipping 0x30, seq_len, and the 0x02 r INTEGER tag)
-                local pos = 4
-                local r_len = der:byte(pos)
-                pos = pos + 1
-                local r = der:sub(pos, pos + r_len - 1)
-                pos = pos + r_len + 1
-                local s_len = der:byte(pos)
-                pos = pos + 1
-                local s = der:sub(pos, pos + s_len - 1)
-                while #r > size do r = r:sub(2) end
-                while #s > size do s = s:sub(2) end
-                while #r < size do r = "\0" .. r end
-                while #s < size do s = "\0" .. s end
-                return r .. s
-            end
-
-            local pkey = openssl_pkey.new({
-                type = "EC", curve = "secp384r1"
-            })
-            local params = pkey:get_parameters()
-            local jwk = {
-                kty = "EC", crv = "P-384",
-                x = b64url_encode(params.x:to_binary()),
-                y = b64url_encode(params.y:to_binary()),
-            }
-
-            local tp = '{"crv":"P-384"'
-                .. ',"kty":"EC"'
-                .. ',"x":"' .. jwk.x .. '"'
-                .. ',"y":"' .. jwk.y .. '"}'
-            local sha = resty_sha256:new()
-            sha:update(tp)
-            local thumbprint = b64url_encode(sha:final())
-
-            local at_h = b64url_encode(
-                cjson.encode({alg = "none", typ = "JWT"})
-            )
-            local at_p = b64url_encode(cjson.encode({
-                sub = "testuser",
-                cnf = { jkt = thumbprint },
-                exp = ngx.time() + 3600,
-            }))
-            local access_token = at_h .. "." .. at_p .. "."
-
-            local dpop_h = cjson.encode({
-                typ = "dpop+jwt", alg = "ES384", jwk = jwk,
-            })
-            local dpop_p = cjson.encode({
-                htm = "GET",
-                htu = "http://localhost/hello",
-                iat = ngx.time(),
-                jti = "es384-" .. tostring(ngx.now()),
-                ath = b64url_encode((function()
-                    local s2 = resty_sha256:new()
-                    s2:update(access_token)
-                    return s2:final()
-                end)()),
-            })
-            local si = b64url_encode(dpop_h)
-                .. "." .. b64url_encode(dpop_p)
-            local der_sig = pkey:sign(si, "sha384")
-            local raw_sig = der_to_raw(der_sig, 48)
-            local proof = si .. "." .. b64url_encode(raw_sig)
-
-            local http = require("resty.http")
-            local httpc = http.new()
+            local h = require("lib.dpop")
+            local f = h.valid_flow("ES384")
+            local httpc = require("resty.http").new()
             local res, err = httpc:request_uri(
                 "http://127.0.0.1:1984/hello",
                 {
                     method = "GET",
                     headers = {
-                        ["Authorization"] = "DPoP "
-                            .. access_token,
-                        ["DPoP"] = proof,
+                        ["Authorization"] = "DPoP " .. f.access_token,
+                        ["DPoP"] = f.proof,
                     },
                 }
             )
@@ -554,72 +403,16 @@ status: 200
 --- config
     location /t {
         content_by_lua_block {
-            local cjson = require("cjson.safe")
-            local openssl_pkey = require("resty.openssl.pkey")
-            local resty_sha256 = require("resty.sha256")
-
-            local function b64url_encode(input)
-                local b64 = ngx.encode_base64(input)
-                return b64:gsub("+", "-"):gsub("/", "_"):gsub("=", "")
-            end
-
-            local pkey = openssl_pkey.new({
-                type = "RSA", bits = 2048
-            })
-            local rp = pkey:get_parameters()
-            local jwk = {
-                kty = "RSA",
-                n = b64url_encode(rp.n:to_binary()),
-                e = b64url_encode(rp.e:to_binary()),
-            }
-
-            local tp = '{"e":"' .. jwk.e .. '"'
-                .. ',"kty":"RSA"'
-                .. ',"n":"' .. jwk.n .. '"}'
-            local sha = resty_sha256:new()
-            sha:update(tp)
-            local thumbprint = b64url_encode(sha:final())
-
-            local at_h = b64url_encode(
-                cjson.encode({alg = "none", typ = "JWT"})
-            )
-            local at_p = b64url_encode(cjson.encode({
-                sub = "testuser",
-                cnf = { jkt = thumbprint },
-                exp = ngx.time() + 3600,
-            }))
-            local access_token = at_h .. "." .. at_p .. "."
-
-            local dpop_h = cjson.encode({
-                typ = "dpop+jwt", alg = "RS256", jwk = jwk,
-            })
-            local dpop_p = cjson.encode({
-                htm = "GET",
-                htu = "http://localhost/hello",
-                iat = ngx.time(),
-                jti = "rs256-" .. tostring(ngx.now()),
-                ath = b64url_encode((function()
-                    local s2 = resty_sha256:new()
-                    s2:update(access_token)
-                    return s2:final()
-                end)()),
-            })
-            local si = b64url_encode(dpop_h)
-                .. "." .. b64url_encode(dpop_p)
-            -- RSA sig is already in correct format
-            local sig = pkey:sign(si, "sha256")
-            local proof = si .. "." .. b64url_encode(sig)
-
-            local http = require("resty.http")
-            local httpc = http.new()
+            local h = require("lib.dpop")
+            local f = h.valid_flow("RS256")
+            local httpc = require("resty.http").new()
             local res, err = httpc:request_uri(
                 "http://127.0.0.1:1984/hello",
                 {
                     method = "GET",
                     headers = {
-                        ["Authorization"] = "DPoP "
-                            .. access_token,
-                        ["DPoP"] = proof,
+                        ["Authorization"] = "DPoP " .. f.access_token,
+                        ["DPoP"] = f.proof,
                     },
                 }
             )
@@ -644,73 +437,16 @@ status: 200
 --- config
     location /t {
         content_by_lua_block {
-            local cjson = require("cjson.safe")
-            local openssl_pkey = require("resty.openssl.pkey")
-            local resty_sha256 = require("resty.sha256")
-
-            local function b64url_encode(input)
-                local b64 = ngx.encode_base64(input)
-                return b64:gsub("+", "-"):gsub("/", "_"):gsub("=", "")
-            end
-
-            local pkey = openssl_pkey.new({
-                type = "RSA", bits = 2048
-            })
-            local rp = pkey:get_parameters()
-            local jwk = {
-                kty = "RSA",
-                n = b64url_encode(rp.n:to_binary()),
-                e = b64url_encode(rp.e:to_binary()),
-            }
-
-            local tp = '{"e":"' .. jwk.e .. '"'
-                .. ',"kty":"RSA"'
-                .. ',"n":"' .. jwk.n .. '"}'
-            local sha = resty_sha256:new()
-            sha:update(tp)
-            local thumbprint = b64url_encode(sha:final())
-
-            local at_h = b64url_encode(
-                cjson.encode({alg = "none", typ = "JWT"})
-            )
-            local at_p = b64url_encode(cjson.encode({
-                sub = "testuser",
-                cnf = { jkt = thumbprint },
-                exp = ngx.time() + 3600,
-            }))
-            local access_token = at_h .. "." .. at_p .. "."
-
-            local dpop_h = cjson.encode({
-                typ = "dpop+jwt", alg = "PS256", jwk = jwk,
-            })
-            local dpop_p = cjson.encode({
-                htm = "GET",
-                htu = "http://localhost/hello",
-                iat = ngx.time(),
-                jti = "ps256-" .. tostring(ngx.now()),
-                ath = b64url_encode((function()
-                    local s2 = resty_sha256:new()
-                    s2:update(access_token)
-                    return s2:final()
-                end)()),
-            })
-            local si = b64url_encode(dpop_h)
-                .. "." .. b64url_encode(dpop_p)
-            -- PSS padding via pkey_ctrl_str
-            local sig = pkey:sign(si, "sha256", nil,
-                {{"rsa_padding_mode", "pss"}})
-            local proof = si .. "." .. b64url_encode(sig)
-
-            local http = require("resty.http")
-            local httpc = http.new()
+            local h = require("lib.dpop")
+            local f = h.valid_flow("PS256")
+            local httpc = require("resty.http").new()
             local res, err = httpc:request_uri(
                 "http://127.0.0.1:1984/hello",
                 {
                     method = "GET",
                     headers = {
-                        ["Authorization"] = "DPoP "
-                            .. access_token,
-                        ["DPoP"] = proof,
+                        ["Authorization"] = "DPoP " .. f.access_token,
+                        ["DPoP"] = f.proof,
                     },
                 }
             )
