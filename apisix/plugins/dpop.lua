@@ -450,8 +450,27 @@ local function compute_jwk_thumbprint(jwk)
     return base64url_encode(digest)
 end
 
+-- A DPoP proof's embedded JWK MUST be a public key only.
+-- Reject any JWK that carries private-key-shaped parameters
+-- (RFC 7517 §4.4 / RFC 7518 §6).
+local function jwk_has_private_params(jwk)
+    if not jwk then return false end
+    if jwk.kty == "EC" then
+        return jwk.d ~= nil
+    elseif jwk.kty == "RSA" then
+        return jwk.d ~= nil
+            or jwk.p ~= nil or jwk.q ~= nil
+            or jwk.dp ~= nil or jwk.dq ~= nil
+            or jwk.qi ~= nil
+    end
+    return false
+end
+
 -- Get or create openssl pkey from JWK, cached by JSON representation
 local function get_or_create_pkey(jwk)
+    if jwk_has_private_params(jwk) then
+        return nil, "proof JWK must not contain private key parameters"
+    end
     local jwk_json = cjson.encode(jwk)
     local pkey = _pkey_cache:get(jwk_json)
     if pkey then
