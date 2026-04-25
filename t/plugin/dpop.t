@@ -464,3 +464,414 @@ status: 200
 status: 200
 --- no_error_log
 [error]
+
+
+
+=== TEST 19: wrong htm in proof — 401
+--- config
+    location /t {
+        content_by_lua_block {
+            local h = require("lib.dpop")
+            local cjson = require("cjson.safe")
+            local f = h.valid_flow("ES256", { htm = "POST" })
+            local httpc = require("resty.http").new()
+            local res = httpc:request_uri(
+                "http://127.0.0.1:1984/hello",
+                {
+                    method = "GET",
+                    headers = {
+                        ["Authorization"] = "DPoP " .. f.access_token,
+                        ["DPoP"] = f.proof,
+                    },
+                }
+            )
+            local body = cjson.decode(res.body or "{}") or {}
+            ngx.say("status: " .. res.status)
+            ngx.say("error: " .. (body.error or "?"))
+        }
+    }
+--- response_body
+status: 401
+error: invalid_dpop_proof
+
+
+
+=== TEST 20: wrong htu in proof — 401
+--- config
+    location /t {
+        content_by_lua_block {
+            local h = require("lib.dpop")
+            local cjson = require("cjson.safe")
+            local f = h.valid_flow("ES256",
+                { htu = "http://other.example/x" })
+            local httpc = require("resty.http").new()
+            local res = httpc:request_uri(
+                "http://127.0.0.1:1984/hello",
+                {
+                    method = "GET",
+                    headers = {
+                        ["Authorization"] = "DPoP " .. f.access_token,
+                        ["DPoP"] = f.proof,
+                    },
+                }
+            )
+            local body = cjson.decode(res.body or "{}") or {}
+            ngx.say("status: " .. res.status)
+            ngx.say("error: " .. (body.error or "?"))
+        }
+    }
+--- response_body
+status: 401
+error: invalid_dpop_proof
+
+
+
+=== TEST 21: missing ath claim when access token is present — 401
+--- config
+    location /t {
+        content_by_lua_block {
+            local h = require("lib.dpop")
+            local cjson = require("cjson.safe")
+            local f = h.valid_flow("ES256", { omit = { "ath" } })
+            local httpc = require("resty.http").new()
+            local res = httpc:request_uri(
+                "http://127.0.0.1:1984/hello",
+                {
+                    method = "GET",
+                    headers = {
+                        ["Authorization"] = "DPoP " .. f.access_token,
+                        ["DPoP"] = f.proof,
+                    },
+                }
+            )
+            local body = cjson.decode(res.body or "{}") or {}
+            ngx.say("status: " .. res.status)
+            ngx.say("error: " .. (body.error or "?"))
+        }
+    }
+--- response_body
+status: 401
+error: invalid_dpop_proof
+
+
+
+=== TEST 22: wrong ath value in proof — 401
+--- config
+    location /t {
+        content_by_lua_block {
+            local h = require("lib.dpop")
+            local cjson = require("cjson.safe")
+            local bogus_ath = h.sha256_b64url("not the real access token")
+            local f = h.valid_flow("ES256", { ath = bogus_ath })
+            local httpc = require("resty.http").new()
+            local res = httpc:request_uri(
+                "http://127.0.0.1:1984/hello",
+                {
+                    method = "GET",
+                    headers = {
+                        ["Authorization"] = "DPoP " .. f.access_token,
+                        ["DPoP"] = f.proof,
+                    },
+                }
+            )
+            local body = cjson.decode(res.body or "{}") or {}
+            ngx.say("status: " .. res.status)
+            ngx.say("error: " .. (body.error or "?"))
+        }
+    }
+--- response_body
+status: 401
+error: invalid_dpop_proof
+
+
+
+=== TEST 23: cnf.jkt does not match proof JWK thumbprint — 401
+--- config
+    location /t {
+        content_by_lua_block {
+            local h = require("lib.dpop")
+            local cjson = require("cjson.safe")
+            -- Two independent EC keypairs.
+            local p1, jwk1, _t1 = h.new_ec_keypair("prime256v1")
+            local _p2, _jwk2, t2 = h.new_ec_keypair("prime256v1")
+            -- Access token binds to KEY 2, but proof is signed by KEY 1.
+            local at = h.make_alg_none_access_token(t2)
+            local proof = h.make_dpop_proof({
+                pkey = p1, jwk = jwk1, alg = "ES256",
+                htm = "GET",
+                htu = "http://localhost/hello",
+                iat = ngx.time(),
+                jti = "jkt-mismatch-" .. tostring(ngx.now()),
+                ath = h.sha256_b64url(at),
+            })
+            local httpc = require("resty.http").new()
+            local res = httpc:request_uri(
+                "http://127.0.0.1:1984/hello",
+                {
+                    method = "GET",
+                    headers = {
+                        ["Authorization"] = "DPoP " .. at,
+                        ["DPoP"] = proof,
+                    },
+                }
+            )
+            local body = cjson.decode(res.body or "{}") or {}
+            ngx.say("status: " .. res.status)
+            ngx.say("error: " .. (body.error or "?"))
+        }
+    }
+--- response_body
+status: 401
+error: invalid_dpop_proof
+
+
+
+=== TEST 24: expired proof iat exceeds proof_max_age — 401
+--- config
+    location /t {
+        content_by_lua_block {
+            local h = require("lib.dpop")
+            local cjson = require("cjson.safe")
+            local f = h.valid_flow("ES256", { iat = ngx.time() - 600 })
+            local httpc = require("resty.http").new()
+            local res = httpc:request_uri(
+                "http://127.0.0.1:1984/hello",
+                {
+                    method = "GET",
+                    headers = {
+                        ["Authorization"] = "DPoP " .. f.access_token,
+                        ["DPoP"] = f.proof,
+                    },
+                }
+            )
+            local body = cjson.decode(res.body or "{}") or {}
+            ngx.say("status: " .. res.status)
+            ngx.say("error: " .. (body.error or "?"))
+        }
+    }
+--- response_body
+status: 401
+error: invalid_dpop_proof
+
+
+
+=== TEST 25: future iat beyond clock_skew — 401
+--- config
+    location /t {
+        content_by_lua_block {
+            local h = require("lib.dpop")
+            local cjson = require("cjson.safe")
+            local f = h.valid_flow("ES256", { iat = ngx.time() + 600 })
+            local httpc = require("resty.http").new()
+            local res = httpc:request_uri(
+                "http://127.0.0.1:1984/hello",
+                {
+                    method = "GET",
+                    headers = {
+                        ["Authorization"] = "DPoP " .. f.access_token,
+                        ["DPoP"] = f.proof,
+                    },
+                }
+            )
+            local body = cjson.decode(res.body or "{}") or {}
+            ngx.say("status: " .. res.status)
+            ngx.say("error: " .. (body.error or "?"))
+        }
+    }
+--- response_body
+status: 401
+error: invalid_dpop_proof
+
+
+
+=== TEST 26: same proof replayed → first 200, second 401
+--- config
+    location /t {
+        content_by_lua_block {
+            local h = require("lib.dpop")
+            local cjson = require("cjson.safe")
+            -- Pin jti so we know both requests use the same proof bytes.
+            local f = h.valid_flow("ES256", { jti = "replay-fixed-jti" })
+            local httpc = require("resty.http").new()
+            local r1 = httpc:request_uri(
+                "http://127.0.0.1:1984/hello",
+                {
+                    method = "GET",
+                    headers = {
+                        ["Authorization"] = "DPoP " .. f.access_token,
+                        ["DPoP"] = f.proof,
+                    },
+                }
+            )
+            local r2 = httpc:request_uri(
+                "http://127.0.0.1:1984/hello",
+                {
+                    method = "GET",
+                    headers = {
+                        ["Authorization"] = "DPoP " .. f.access_token,
+                        ["DPoP"] = f.proof,
+                    },
+                }
+            )
+            ngx.say("first: " .. r1.status)
+            ngx.say("second: " .. r2.status)
+            local b2 = cjson.decode(r2.body or "{}") or {}
+            ngx.say("second_error: " .. (b2.error or "?"))
+        }
+    }
+--- response_body
+first: 200
+second: 401
+second_error: invalid_dpop_proof
+
+
+
+=== TEST 27: empty jti claim — 401
+--- config
+    location /t {
+        content_by_lua_block {
+            local h = require("lib.dpop")
+            local cjson = require("cjson.safe")
+            local f = h.valid_flow("ES256", { jti = "" })
+            local httpc = require("resty.http").new()
+            local res = httpc:request_uri(
+                "http://127.0.0.1:1984/hello",
+                {
+                    method = "GET",
+                    headers = {
+                        ["Authorization"] = "DPoP " .. f.access_token,
+                        ["DPoP"] = f.proof,
+                    },
+                }
+            )
+            local body = cjson.decode(res.body or "{}") or {}
+            ngx.say("status: " .. res.status)
+            ngx.say("error: " .. (body.error or "?"))
+        }
+    }
+--- response_body
+status: 401
+error: invalid_dpop_proof
+
+
+
+=== TEST 28: proof with alg=none and empty signature — 401
+--- config
+    location /t {
+        content_by_lua_block {
+            local h = require("lib.dpop")
+            local cjson = require("cjson.safe")
+            local pkey, jwk, tp = h.new_ec_keypair("prime256v1")
+            local at = h.make_alg_none_access_token(tp)
+            local proof = h.make_dpop_proof({
+                pkey = pkey, jwk = jwk, alg = "none",
+                htm = "GET",
+                htu = "http://localhost/hello",
+                iat = ngx.time(),
+                jti = "alg-none-" .. tostring(ngx.now()),
+                ath = h.sha256_b64url(at),
+                raw_signature = "",
+            })
+            local httpc = require("resty.http").new()
+            local res = httpc:request_uri(
+                "http://127.0.0.1:1984/hello",
+                {
+                    method = "GET",
+                    headers = {
+                        ["Authorization"] = "DPoP " .. at,
+                        ["DPoP"] = proof,
+                    },
+                }
+            )
+            local body = cjson.decode(res.body or "{}") or {}
+            ngx.say("status: " .. res.status)
+            ngx.say("error: " .. (body.error or "?"))
+        }
+    }
+--- response_body
+status: 401
+error: invalid_dpop_proof
+
+
+
+=== TEST 29: proof JWK contains private key parameter — 401
+--- config
+    location /t {
+        content_by_lua_block {
+            local h = require("lib.dpop")
+            local cjson = require("cjson.safe")
+            local pkey, jwk, tp = h.new_ec_keypair("prime256v1")
+            -- Inject a private-key-shaped parameter; bytes content is irrelevant
+            -- because the plugin must reject by shape before any crypto check.
+            jwk.d = h.b64url_encode("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+            local at = h.make_alg_none_access_token(tp)
+            local proof = h.make_dpop_proof({
+                pkey = pkey, jwk = jwk, alg = "ES256",
+                htm = "GET",
+                htu = "http://localhost/hello",
+                iat = ngx.time(),
+                jti = "private-jwk-" .. tostring(ngx.now()),
+                ath = h.sha256_b64url(at),
+            })
+            local httpc = require("resty.http").new()
+            local res = httpc:request_uri(
+                "http://127.0.0.1:1984/hello",
+                {
+                    method = "GET",
+                    headers = {
+                        ["Authorization"] = "DPoP " .. at,
+                        ["DPoP"] = proof,
+                    },
+                }
+            )
+            local body = cjson.decode(res.body or "{}") or {}
+            ngx.say("status: " .. res.status)
+            ngx.say("error: " .. (body.error or "?"))
+        }
+    }
+--- response_body
+status: 401
+error: invalid_dpop_proof
+
+
+
+=== TEST 30: request with two DPoP headers — 401
+--- config
+    location /t {
+        content_by_lua_block {
+            local h = require("lib.dpop")
+            local cjson = require("cjson.safe")
+            -- Two valid proofs (different jti) signed by the same key.
+            local pkey, jwk, tp = h.new_ec_keypair("prime256v1")
+            local at = h.make_alg_none_access_token(tp)
+            local ath = h.sha256_b64url(at)
+            local make = function(jti)
+                return h.make_dpop_proof({
+                    pkey = pkey, jwk = jwk, alg = "ES256",
+                    htm = "GET",
+                    htu = "http://localhost/hello",
+                    iat = ngx.time(), jti = jti, ath = ath,
+                })
+            end
+            local p1 = make("multi-1")
+            local p2 = make("multi-2")
+            local httpc = require("resty.http").new()
+            local res = httpc:request_uri(
+                "http://127.0.0.1:1984/hello",
+                {
+                    method = "GET",
+                    headers = {
+                        ["Authorization"] = "DPoP " .. at,
+                        -- Array value emits two DPoP headers.
+                        ["DPoP"] = { p1, p2 },
+                    },
+                }
+            )
+            local body = cjson.decode(res.body or "{}") or {}
+            ngx.say("status: " .. res.status)
+            ngx.say("error: " .. (body.error or "?"))
+        }
+    }
+--- response_body
+status: 401
+error: invalid_dpop_proof
