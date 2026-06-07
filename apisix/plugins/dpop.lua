@@ -171,10 +171,6 @@ local schema = {
             default = "",
             pattern = "^$|^https?://",
         },
-        require_nonce = {
-            type = "boolean",
-            default = false
-        },
         send_thumbprint_header = {
             type = "boolean",
             default = true
