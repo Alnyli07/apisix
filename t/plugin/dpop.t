@@ -1081,18 +1081,17 @@ error: invalid_dpop_proof
 --- config
     location /t {
         content_by_lua_block {
-            local t = require("lib.test_admin").test
             local h = require("lib.dpop")
-            local httpc = require("resty.http").new()
-            -- DIAGNOSTIC PROBE (not the final form): figure out whether the
-            -- strict route is in etcd and how long it takes APISIX to start
-            -- serving it from a freshly-booted worker.
-            local final, attempts, flipped
-            for i = 1, 150 do
-                attempts = i
+            -- A freshly (re)started worker answers 404 until its initial etcd
+            -- config sync has loaded the routes. Wait for /strict-hello to go
+            -- live before asserting the success path. A fresh http client is
+            -- used per attempt on purpose: reusing one resty.http object across
+            -- many request_uri calls can wedge the connection.
+            local res
+            for _ = 1, 50 do
                 local f = h.valid_flow("ES256",
                     { htu = "http://127.0.0.1:1984/strict-hello" })
-                local res = httpc:request_uri(
+                res = require("resty.http").new():request_uri(
                     "http://127.0.0.1:1984/strict-hello",
                     {
                         method = "GET",
@@ -1102,24 +1101,22 @@ error: invalid_dpop_proof
                         },
                     }
                 )
-                final = res.status
-                if res.status ~= 404 then
-                    flipped = i
+                if not res or res.status ~= 404 then
                     break
                 end
-                ngx.sleep(0.1)
+                ngx.sleep(0.2)
             end
-            -- Is route 3 present in etcd right now (via Admin API)?
-            local code3 = t('/apisix/admin/routes/3', ngx.HTTP_GET)
-            ngx.say("DIAG attempts=", attempts,
-                    " flipped_at=", tostring(flipped),
-                    " final_status=", final,
-                    " etcd_route3_admin_code=", code3)
+            ngx.say("status: " .. (res and res.status or "nil"))
+            if not res or res.status ~= 200 then
+                ngx.say("body: " .. ((res and res.body) or ""))
+            end
         }
     }
---- timeout: 25
+--- timeout: 15
 --- response_body
-DIAG_PROBE_FORCE_FAIL_SO_OUTPUT_IS_PRINTED
+status: 200
+--- no_error_log
+[error]
 
 
 
