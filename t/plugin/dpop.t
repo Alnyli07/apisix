@@ -265,12 +265,11 @@ missing DPoP proof header.*
 
 
 
-=== TEST 12: set up routes for uri_allow and strict_htu binding
+=== TEST 12: set up route with uri_allow for selective enforcement
 --- config
     location /t {
         content_by_lua_block {
             local t = require("lib.test_admin").test
-            -- route 2: selective enforcement via uri_allow
             local code, body = t('/apisix/admin/routes/2',
                 ngx.HTTP_PUT,
                 [[{
@@ -291,39 +290,8 @@ missing DPoP proof header.*
                 )
             if code >= 300 then
                 ngx.status = code
-                ngx.say(body)
-                return
             end
-            -- route 3: full-URL (strict_htu) binding. Created here, alongside
-            -- the other routes, so it is synced long before the strict_htu
-            -- tests consume it (a route created in the block right before its
-            -- first request can 404 while the etcd -> worker sync catches up).
-            code, body = t('/apisix/admin/routes/3',
-                ngx.HTTP_PUT,
-                [[{
-                    "plugins": {
-                        "dpop": {
-                            "verify_access_token": false,
-                            "strict_htu": true,
-                            "public_base_url": "http://127.0.0.1:1984",
-                            "allowed_algs": ["ES256"]
-                        }
-                    },
-                    "upstream": {
-                        "nodes": {
-                            "127.0.0.1:1980": 1
-                        },
-                        "type": "roundrobin"
-                    },
-                    "uri": "/strict-hello"
-                }]]
-                )
-            if code >= 300 then
-                ngx.status = code
-                ngx.say(body)
-                return
-            end
-            ngx.say("passed")
+            ngx.say(body)
         }
     }
 --- response_body
@@ -1077,27 +1045,52 @@ error: invalid_dpop_proof
 
 
 
-=== TEST 35: strict_htu — exact scheme/host/port/path match → 200
+=== TEST 35: set up route with strict_htu (full-URL binding)
 --- config
     location /t {
         content_by_lua_block {
             local t = require("lib.test_admin").test
+            local code, body = t('/apisix/admin/routes/3',
+                ngx.HTTP_PUT,
+                [[{
+                    "plugins": {
+                        "dpop": {
+                            "verify_access_token": false,
+                            "strict_htu": true,
+                            "public_base_url": "http://127.0.0.1:1984",
+                            "allowed_algs": ["ES256"]
+                        }
+                    },
+                    "upstream": {
+                        "nodes": {
+                            "127.0.0.1:1980": 1
+                        },
+                        "type": "roundrobin"
+                    },
+                    "uri": "/strict-hello"
+                }]]
+                )
+            if code >= 300 then
+                ngx.status = code
+            end
+            ngx.say(body)
+        }
+    }
+--- response_body
+passed
+
+
+
+=== TEST 36: strict_htu — exact scheme/host/port/path match → 200
+--- config
+    location /t {
+        content_by_lua_block {
             local h = require("lib.dpop")
-            local http = require("resty.http")
-            -- PROBE v3 (not final): does THIS worker have route 3 in memory?
-            -- 1) worker's in-memory route table via the control API (/v1/)
-            local cc = http.new()
-            cc:set_timeout(2000)
-            local cres = cc:request_uri("http://127.0.0.1:1984/v1/routes",
-                { method = "GET" })
-            local worker_routes = cres and cres.body or
-                ("ctl_err:" .. tostring(cres))
-            -- 2) etcd view via Admin API
-            local ecode = t('/apisix/admin/routes/3', ngx.HTTP_GET)
-            -- 3) one proxy hit
+            local cjson = require("cjson.safe")
             local f = h.valid_flow("ES256",
                 { htu = "http://127.0.0.1:1984/strict-hello" })
-            local pres = http.new():request_uri(
+            local httpc = require("resty.http").new()
+            local res = httpc:request_uri(
                 "http://127.0.0.1:1984/strict-hello",
                 {
                     method = "GET",
@@ -1107,18 +1100,20 @@ error: invalid_dpop_proof
                     },
                 }
             )
-            ngx.say("PROBE3 etcd_routes3=", ecode,
-                    " proxy=", (pres and pres.status or "nil"))
-            ngx.say("WORKER_ROUTES=", worker_routes)
+            ngx.say("status: " .. res.status)
+            if res.status ~= 200 then
+                ngx.say("body: " .. (res.body or ""))
+            end
         }
     }
---- timeout: 10
 --- response_body
-PROBE3_FORCE_FAIL_TO_PRINT
+status: 200
+--- no_error_log
+[error]
 
 
 
-=== TEST 36: strict_htu — host mismatch (same path) → 401
+=== TEST 37: strict_htu — host mismatch (same path) → 401
 --- config
     location /t {
         content_by_lua_block {
@@ -1148,7 +1143,7 @@ error: invalid_dpop_proof
 
 
 
-=== TEST 37: strict_htu — scheme mismatch (https vs http) → 401
+=== TEST 38: strict_htu — scheme mismatch (https vs http) → 401
 --- config
     location /t {
         content_by_lua_block {
@@ -1178,7 +1173,7 @@ error: invalid_dpop_proof
 
 
 
-=== TEST 38: path-only mode (default) ignores scheme/host/port — 200
+=== TEST 39: path-only mode (default) ignores scheme/host/port — 200
 --- config
     location /t {
         content_by_lua_block {
