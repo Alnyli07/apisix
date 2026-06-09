@@ -1081,42 +1081,40 @@ error: invalid_dpop_proof
 --- config
     location /t {
         content_by_lua_block {
+            local t = require("lib.test_admin").test
             local h = require("lib.dpop")
-            -- A freshly (re)started worker answers 404 until its initial etcd
-            -- config sync has loaded the routes. Wait for /strict-hello to go
-            -- live before asserting the success path. A fresh http client is
-            -- used per attempt on purpose: reusing one resty.http object across
-            -- many request_uri calls can wedge the connection.
-            local res
-            for _ = 1, 50 do
-                local f = h.valid_flow("ES256",
-                    { htu = "http://127.0.0.1:1984/strict-hello" })
-                res = require("resty.http").new():request_uri(
-                    "http://127.0.0.1:1984/strict-hello",
-                    {
-                        method = "GET",
-                        headers = {
-                            ["Authorization"] = "DPoP " .. f.access_token,
-                            ["DPoP"] = f.proof,
-                        },
-                    }
-                )
-                if not res or res.status ~= 404 then
-                    break
-                end
-                ngx.sleep(0.2)
-            end
-            ngx.say("status: " .. (res and res.status or "nil"))
-            if not res or res.status ~= 200 then
-                ngx.say("body: " .. ((res and res.body) or ""))
-            end
+            local http = require("resty.http")
+            -- PROBE v3 (not final): does THIS worker have route 3 in memory?
+            -- 1) worker's in-memory route table via the control API (/v1/)
+            local cc = http.new()
+            cc:set_timeout(2000)
+            local cres = cc:request_uri("http://127.0.0.1:1984/v1/routes",
+                { method = "GET" })
+            local worker_routes = cres and cres.body or
+                ("ctl_err:" .. tostring(cres))
+            -- 2) etcd view via Admin API
+            local ecode = t('/apisix/admin/routes/3', ngx.HTTP_GET)
+            -- 3) one proxy hit
+            local f = h.valid_flow("ES256",
+                { htu = "http://127.0.0.1:1984/strict-hello" })
+            local pres = http.new():request_uri(
+                "http://127.0.0.1:1984/strict-hello",
+                {
+                    method = "GET",
+                    headers = {
+                        ["Authorization"] = "DPoP " .. f.access_token,
+                        ["DPoP"] = f.proof,
+                    },
+                }
+            )
+            ngx.say("PROBE3 etcd_routes3=", ecode,
+                    " proxy=", (pres and pres.status or "nil"))
+            ngx.say("WORKER_ROUTES=", worker_routes)
         }
     }
---- timeout: 15
+--- timeout: 10
 --- response_body
-status: 200
---- no_error_log
-[error]
+PROBE3_FORCE_FAIL_TO_PRINT
 
 
 
