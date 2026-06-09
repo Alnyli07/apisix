@@ -265,11 +265,12 @@ missing DPoP proof header.*
 
 
 
-=== TEST 12: set up route with uri_allow for selective enforcement
+=== TEST 12: set up routes for uri_allow and strict_htu binding
 --- config
     location /t {
         content_by_lua_block {
             local t = require("lib.test_admin").test
+            -- route 2: selective enforcement via uri_allow
             local code, body = t('/apisix/admin/routes/2',
                 ngx.HTTP_PUT,
                 [[{
@@ -290,8 +291,39 @@ missing DPoP proof header.*
                 )
             if code >= 300 then
                 ngx.status = code
+                ngx.say(body)
+                return
             end
-            ngx.say(body)
+            -- route 3: full-URL (strict_htu) binding. Created here, alongside
+            -- the other routes, so it is synced long before the strict_htu
+            -- tests consume it (a route created in the block right before its
+            -- first request can 404 while the etcd -> worker sync catches up).
+            code, body = t('/apisix/admin/routes/3',
+                ngx.HTTP_PUT,
+                [[{
+                    "plugins": {
+                        "dpop": {
+                            "verify_access_token": false,
+                            "strict_htu": true,
+                            "public_base_url": "http://127.0.0.1:1984",
+                            "allowed_algs": ["ES256"]
+                        }
+                    },
+                    "upstream": {
+                        "nodes": {
+                            "127.0.0.1:1980": 1
+                        },
+                        "type": "roundrobin"
+                    },
+                    "uri": "/strict-hello"
+                }]]
+                )
+            if code >= 300 then
+                ngx.status = code
+                ngx.say(body)
+                return
+            end
+            ngx.say("passed")
         }
     }
 --- response_body
@@ -1045,92 +1077,25 @@ error: invalid_dpop_proof
 
 
 
-=== TEST 35: set up route with strict_htu (full-URL binding)
+=== TEST 35: strict_htu — exact scheme/host/port/path match → 200
 --- config
     location /t {
         content_by_lua_block {
-            local t = require("lib.test_admin").test
-            local code, body = t('/apisix/admin/routes/3',
-                ngx.HTTP_PUT,
-                [[{
-                    "plugins": {
-                        "dpop": {
-                            "verify_access_token": false,
-                            "strict_htu": true,
-                            "public_base_url": "http://127.0.0.1:1984",
-                            "allowed_algs": ["ES256"]
-                        }
-                    },
-                    "upstream": {
-                        "nodes": {
-                            "127.0.0.1:1980": 1
-                        },
-                        "type": "roundrobin"
-                    },
-                    "uri": "/strict-hello"
-                }]]
-                )
-            if code >= 300 then
-                ngx.status = code
-            end
-            ngx.say(body)
-        }
-    }
---- response_body
-passed
-
-
-
-=== TEST 36: strict_htu — exact scheme/host/port/path match → 200
---- config
-    location /t {
-        content_by_lua_block {
-            local t = require("lib.test_admin").test
             local h = require("lib.dpop")
             local cjson = require("cjson.safe")
+            local f = h.valid_flow("ES256",
+                { htu = "http://127.0.0.1:1984/strict-hello" })
             local httpc = require("resty.http").new()
-            -- Route 3 was created in TEST 35, but the etcd -> worker config
-            -- sync is async and can take a second or more under load, so the
-            -- first hit may 404. (Re)PUT it here so this worker is guaranteed
-            -- a watch event, then poll with a fresh proof until it goes live.
-            t('/apisix/admin/routes/3', ngx.HTTP_PUT,
-                [[{
-                    "plugins": {
-                        "dpop": {
-                            "verify_access_token": false,
-                            "strict_htu": true,
-                            "public_base_url": "http://127.0.0.1:1984",
-                            "allowed_algs": ["ES256"]
-                        }
+            local res = httpc:request_uri(
+                "http://127.0.0.1:1984/strict-hello",
+                {
+                    method = "GET",
+                    headers = {
+                        ["Authorization"] = "DPoP " .. f.access_token,
+                        ["DPoP"] = f.proof,
                     },
-                    "upstream": {
-                        "nodes": {
-                            "127.0.0.1:1980": 1
-                        },
-                        "type": "roundrobin"
-                    },
-                    "uri": "/strict-hello"
-                }]]
+                }
             )
-            local res
-            for _ = 1, 50 do
-                local f = h.valid_flow("ES256",
-                    { htu = "http://127.0.0.1:1984/strict-hello" })
-                res = httpc:request_uri(
-                    "http://127.0.0.1:1984/strict-hello",
-                    {
-                        method = "GET",
-                        headers = {
-                            ["Authorization"] = "DPoP " .. f.access_token,
-                            ["DPoP"] = f.proof,
-                        },
-                    }
-                )
-                if res.status ~= 404 then
-                    break
-                end
-                ngx.sleep(0.1)
-            end
             ngx.say("status: " .. res.status)
             if res.status ~= 200 then
                 ngx.say("body: " .. (res.body or ""))
@@ -1144,7 +1109,7 @@ status: 200
 
 
 
-=== TEST 37: strict_htu — host mismatch (same path) → 401
+=== TEST 36: strict_htu — host mismatch (same path) → 401
 --- config
     location /t {
         content_by_lua_block {
@@ -1174,7 +1139,7 @@ error: invalid_dpop_proof
 
 
 
-=== TEST 38: strict_htu — scheme mismatch (https vs http) → 401
+=== TEST 37: strict_htu — scheme mismatch (https vs http) → 401
 --- config
     location /t {
         content_by_lua_block {
@@ -1204,7 +1169,7 @@ error: invalid_dpop_proof
 
 
 
-=== TEST 39: path-only mode (default) ignores scheme/host/port — 200
+=== TEST 38: path-only mode (default) ignores scheme/host/port — 200
 --- config
     location /t {
         content_by_lua_block {
