@@ -1085,14 +1085,35 @@ passed
 --- config
     location /t {
         content_by_lua_block {
+            local t = require("lib.test_admin").test
             local h = require("lib.dpop")
             local cjson = require("cjson.safe")
             local httpc = require("resty.http").new()
-            -- TEST 35 created route 3 just before this block; the new route
-            -- may not have synced from etcd to the worker yet, so the first
-            -- hit can 404. Retry with a fresh proof until the route is live.
+            -- Route 3 was created in TEST 35, but the etcd -> worker config
+            -- sync is async and can take a second or more under load, so the
+            -- first hit may 404. (Re)PUT it here so this worker is guaranteed
+            -- a watch event, then poll with a fresh proof until it goes live.
+            t('/apisix/admin/routes/3', ngx.HTTP_PUT,
+                [[{
+                    "plugins": {
+                        "dpop": {
+                            "verify_access_token": false,
+                            "strict_htu": true,
+                            "public_base_url": "http://127.0.0.1:1984",
+                            "allowed_algs": ["ES256"]
+                        }
+                    },
+                    "upstream": {
+                        "nodes": {
+                            "127.0.0.1:1980": 1
+                        },
+                        "type": "roundrobin"
+                    },
+                    "uri": "/strict-hello"
+                }]]
+            )
             local res
-            for _ = 1, 10 do
+            for _ = 1, 50 do
                 local f = h.valid_flow("ES256",
                     { htu = "http://127.0.0.1:1984/strict-hello" })
                 res = httpc:request_uri(
