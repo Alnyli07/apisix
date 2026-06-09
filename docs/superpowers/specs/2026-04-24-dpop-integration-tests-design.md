@@ -48,11 +48,11 @@ function _M.b64url_encode(bytes)
 -- comp_size: 32 (ES256), 48 (ES384).
 function _M.der_to_raw_ecdsa(der, comp_size)
 
--- EC keypair generator. curve ∈ {"prime256v1" = P-256, "secp384r1" = P-384}.
+-- EC key pair generator. curve ∈ {"prime256v1" = P-256, "secp384r1" = P-384}.
 -- Returns pkey, jwk (table), thumbprint (base64url RFC 7638).
 function _M.new_ec_keypair(curve)
 
--- RSA keypair generator. bits default 2048.
+-- RSA key pair generator. bits default 2048.
 -- Returns pkey, jwk (table), thumbprint (base64url RFC 7638).
 function _M.new_rsa_keypair(bits)
 
@@ -89,7 +89,7 @@ Design rationale:
 - `make_dpop_proof` exposes enough override hooks to build *any* malformed proof we need — wrong claims, missing claims, wrong typ, wrong alg, precomputed signature. Negative tests stay one-liners.
 - `valid_flow` is the common case; negative tests start from it and mutate one field.
 - `der_to_raw_ecdsa` is deliberately parameterized by `comp_size` — the previous inline bug (`pos=3`) was caused by per-test duplication; a single helper eliminates that class of bug.
-- JKT-mismatch scenarios (TEST 23) need two independent keypairs. Rather than adding a dedicated helper, that test calls `new_ec_keypair` twice and composes `make_alg_none_access_token` + `make_dpop_proof` manually. One test, no reusable abstraction needed.
+- JKT-mismatch scenarios (TEST 23) need two independent key pairs. Rather than adding a dedicated helper, that test calls `new_ec_keypair` twice and composes `make_alg_none_access_token` + `make_dpop_proof` manually. One test, no reusable abstraction needed.
 
 ### Changed: `t/plugin/dpop.t`
 
