@@ -1087,19 +1087,29 @@ passed
         content_by_lua_block {
             local h = require("lib.dpop")
             local cjson = require("cjson.safe")
-            local f = h.valid_flow("ES256",
-                { htu = "http://127.0.0.1:1984/strict-hello" })
             local httpc = require("resty.http").new()
-            local res = httpc:request_uri(
-                "http://127.0.0.1:1984/strict-hello",
-                {
-                    method = "GET",
-                    headers = {
-                        ["Authorization"] = "DPoP " .. f.access_token,
-                        ["DPoP"] = f.proof,
-                    },
-                }
-            )
+            -- TEST 35 created route 3 just before this block; the new route
+            -- may not have synced from etcd to the worker yet, so the first
+            -- hit can 404. Retry with a fresh proof until the route is live.
+            local res
+            for _ = 1, 10 do
+                local f = h.valid_flow("ES256",
+                    { htu = "http://127.0.0.1:1984/strict-hello" })
+                res = httpc:request_uri(
+                    "http://127.0.0.1:1984/strict-hello",
+                    {
+                        method = "GET",
+                        headers = {
+                            ["Authorization"] = "DPoP " .. f.access_token,
+                            ["DPoP"] = f.proof,
+                        },
+                    }
+                )
+                if res.status ~= 404 then
+                    break
+                end
+                ngx.sleep(0.1)
+            end
             ngx.say("status: " .. res.status)
             if res.status ~= 200 then
                 ngx.say("body: " .. (res.body or ""))
