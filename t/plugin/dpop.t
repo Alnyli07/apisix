@@ -591,7 +591,7 @@ error: invalid_dpop_proof
         content_by_lua_block {
             local h = require("lib.dpop")
             local cjson = require("cjson.safe")
-            -- Two independent EC keypairs.
+            -- Two independent EC key pairs.
             local p1, jwk1, _t1 = h.new_ec_keypair("prime256v1")
             local _p2, _jwk2, t2 = h.new_ec_keypair("prime256v1")
             -- Access token binds to KEY 2, but proof is signed by KEY 1.

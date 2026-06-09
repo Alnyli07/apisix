@@ -56,7 +56,7 @@ local function sha256_b64url(bytes)
 end
 _M.sha256_b64url = sha256_b64url
 
--- EC keypair. curve ∈ {"prime256v1" (P-256), "secp384r1" (P-384)}.
+-- EC key pair. curve ∈ {"prime256v1" (P-256), "secp384r1" (P-384)}.
 -- Returns pkey, jwk_table, thumbprint_b64url (RFC 7638).
 function _M.new_ec_keypair(curve)
     local pkey = openssl_pkey.new({ type = "EC", curve = curve })
@@ -82,7 +82,7 @@ function _M.new_ec_keypair(curve)
     return pkey, jwk, sha256_b64url(input)
 end
 
--- RSA keypair. bits default 2048.
+-- RSA key pair. bits default 2048.
 -- Returns pkey, jwk_table, thumbprint_b64url (RFC 7638).
 function _M.new_rsa_keypair(bits)
     bits = bits or 2048
