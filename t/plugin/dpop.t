@@ -1081,31 +1081,45 @@ error: invalid_dpop_proof
 --- config
     location /t {
         content_by_lua_block {
+            local t = require("lib.test_admin").test
             local h = require("lib.dpop")
-            local cjson = require("cjson.safe")
-            local f = h.valid_flow("ES256",
-                { htu = "http://127.0.0.1:1984/strict-hello" })
             local httpc = require("resty.http").new()
-            local res = httpc:request_uri(
-                "http://127.0.0.1:1984/strict-hello",
-                {
-                    method = "GET",
-                    headers = {
-                        ["Authorization"] = "DPoP " .. f.access_token,
-                        ["DPoP"] = f.proof,
-                    },
-                }
-            )
-            ngx.say("status: " .. res.status)
-            if res.status ~= 200 then
-                ngx.say("body: " .. (res.body or ""))
+            -- DIAGNOSTIC PROBE (not the final form): figure out whether the
+            -- strict route is in etcd and how long it takes APISIX to start
+            -- serving it from a freshly-booted worker.
+            local final, attempts, flipped
+            for i = 1, 150 do
+                attempts = i
+                local f = h.valid_flow("ES256",
+                    { htu = "http://127.0.0.1:1984/strict-hello" })
+                local res = httpc:request_uri(
+                    "http://127.0.0.1:1984/strict-hello",
+                    {
+                        method = "GET",
+                        headers = {
+                            ["Authorization"] = "DPoP " .. f.access_token,
+                            ["DPoP"] = f.proof,
+                        },
+                    }
+                )
+                final = res.status
+                if res.status ~= 404 then
+                    flipped = i
+                    break
+                end
+                ngx.sleep(0.1)
             end
+            -- Is route 3 present in etcd right now (via Admin API)?
+            local code3 = t('/apisix/admin/routes/3', ngx.HTTP_GET)
+            ngx.say("DIAG attempts=", attempts,
+                    " flipped_at=", tostring(flipped),
+                    " final_status=", final,
+                    " etcd_route3_admin_code=", code3)
         }
     }
+--- timeout: 25
 --- response_body
-status: 200
---- no_error_log
-[error]
+DIAG_PROBE_FORCE_FAIL_SO_OUTPUT_IS_PRINTED
 
 
 
